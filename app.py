@@ -88,12 +88,12 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Initialize Session State Storage
+# Initialize Persistent Session State Data Storage
 if "popolo_tables" not in st.session_state:
     st.session_state["popolo_tables"] = None
 
 # -----------------------------------------------------------------------------
-# 2. PARSER & MUNICIPAL ELECTION LOGIC HELPERS
+# 2. PARSER & ELECTION LOGIC HELPERS
 # -----------------------------------------------------------------------------
 MUNI_PREFIXES = [
     "BAARD", "KHOI", "HOOGLAND", "NKONYENI", "ALFRED NZO", "OR TAMBO",
@@ -196,51 +196,119 @@ def determine_popolo_office(muni_str, ward_order_str):
     is_district = muni_str.startswith("DC") or "DC" in muni_str
 
     if is_metro:
-        return "Metro Council Ward" if is_ward else "Metro PR"
+        return "Metro Council Ward Candidate" if is_ward else "Metro PR Candidate"
     elif is_district:
-        return "District Council PR"
+        return "District PR Candidate"
     else:
-        return "Local Council Ward" if is_ward else "Local Council PR"
+        return "Local Council Ward Candidate" if is_ward else "Local PR Candidate"
 
-def build_all_6_popolo_tables(df_raw, candidate_summary):
+def process_full_popolo_dataset(df_raw):
+    """Processes extracted nominations and returns all 6 Popolo standard tables."""
+    df_raw["clean_office"] = df_raw.apply(
+        lambda row: determine_popolo_office(row["municipality"], row["ward_pr_order"]),
+        axis=1
+    )
+
     # 1. Persons Table
-    df_persons = candidate_summary.copy()
+    df_persons = df_raw[[
+        "full_name",
+        "party_id",
+        "party_name",
+        "clean_office",
+        "municipality",
+        "ward_pr_order"
+    ]].drop_duplicates(subset=["full_name"]).reset_index(drop=True)
+
     df_persons["id"] = [f"pers_{i+1:05d}" for i in range(len(df_persons))]
-    df_persons[["first_name", "middle_name", "last_name"]] = df_persons["full_name"].apply(lambda x: pd.Series(parse_name(x)))
-    df_persons["gender"] = "Unspecified"
+    
+    name_parsed = df_persons["full_name"].apply(lambda x: pd.Series(parse_name(x)))
+    df_persons["first_name"] = name_parsed[0]
+    df_persons["middle_name"] = name_parsed[1]
+    df_persons["last_name"] = name_parsed[2]
+    df_persons["gender"] = None
 
-    # 2. Parties Table
-    df_parties = df_raw[["party_id", "party_name"]].drop_duplicates().reset_index(drop=True)
-    df_parties["country"] = "South Africa"
+    df_persons_final = df_persons[[
+        "id",
+        "full_name",
+        "first_name",
+        "middle_name",
+        "last_name",
+        "gender",
+        "clean_office",
+        "party_id",
+        "party_name",
+        "municipality",
+        "ward_pr_order"
+    ]].rename(columns={"clean_office": "office"})
 
-    # 3. Memberships Table
-    df_memberships = df_raw.merge(df_persons[["full_name", "id"]], on="full_name", how="left").rename(columns={"id": "person_id"})
-    df_memberships["membership_id"] = [f"mshp_{i+1:06d}" for i in range(len(df_memberships))]
+    # 2. Memberships Table
+    df_memberships = df_raw.merge(
+        df_persons_final[["full_name", "id"]], on="full_name", how="left"
+    ).rename(columns={"id": "person_id"})
+
+    df_memberships["id"] = df_memberships["person_id"].apply(
+        lambda p_id: f"mshp_{p_id}_26"
+    )
+    df_memberships["membership_type"] = "campaigning_politician"
+    df_memberships["list_category"] = df_memberships["ward_pr_order"].apply(
+        lambda x: "WARD" if str(x).isdigit() and len(str(x)) < 5 else "PR"
+    )
+
+    df_memberships["detailed_office"] = (
+        df_memberships["municipality"]
+        + " ("
+        + df_memberships["list_category"]
+        + " Candidate)"
+    )
+
+    df_memberships_final = df_memberships[[
+        "id",
+        "person_id",
+        "party_id",
+        "party_name",
+        "municipality",
+        "list_category",
+        "ward_pr_order",
+        "detailed_office",
+        "membership_type"
+    ]].rename(
+        columns={
+            "municipality": "Municipality",
+            "list_category": "list_type",
+            "ward_pr_order": "Ward_PR_Order",
+            "detailed_office": "office"
+        }
+    )
+
+    # 3. Parties Table
+    df_parties_final = df_raw[["party_id", "party_name"]].drop_duplicates().reset_index(drop=True)
+    df_parties_final["country"] = "South Africa"
 
     # 4. Roles Table
-    df_roles = pd.DataFrame([
-        {"role_id": "role_ward", "role_title": "Ward Councillor Candidate", "jurisdiction": "South Africa"},
-        {"role_id": "role_pr", "role_title": "Proportional Representation Candidate", "jurisdiction": "South Africa"}
+    df_roles_final = pd.DataFrame([
+        {"id": "role_ward", "role_title": "Ward Councillor Candidate", "jurisdiction": "South Africa"},
+        {"id": "role_pr", "role_title": "Proportional Representation Candidate", "jurisdiction": "South Africa"}
     ])
 
     # 5. Chambers Table
-    df_chambers = pd.DataFrame([
-        {"chamber_id": "ch_metro", "chamber_name": "Metropolitan Municipal Council", "country": "South Africa"},
-        {"chamber_id": "ch_local", "chamber_name": "Local Municipal Council", "country": "South Africa"},
-        {"chamber_id": "ch_district", "chamber_name": "District Municipal Council", "country": "South Africa"}
+    df_chambers_final = pd.DataFrame([
+        {"id": "ch_metro", "chamber_name": "Metropolitan Municipal Council", "country": "South Africa"},
+        {"id": "ch_local", "chamber_name": "Local Municipal Council", "country": "South Africa"},
+        {"id": "ch_district", "chamber_name": "District Municipal Council", "country": "South Africa"}
     ])
 
     # 6. Contests Table
-    df_contests = df_raw[["municipality", "ward_pr_order", "clean_office"]].drop_duplicates().reset_index(drop=True)
-    df_contests["contest_id"] = [f"cntst_{i+1:05d}" for i in range(len(df_contests))]
+    df_contests_final = df_raw[["municipality", "ward_pr_order", "clean_office"]].drop_duplicates().reset_index(drop=True)
+    df_contests_final["id"] = [f"cntst_{i+1:05d}" for i in range(len(df_contests_final))]
 
     return {
-        "Persons": df_persons,
-        "Parties": df_parties,
-        "Memberships": df_memberships,
-        "Roles": df_roles,
-        "Chambers": df_chambers,
-        "Contests": df_contests
+        "Persons": df_persons_final,
+        "Parties": df_parties_final,
+        "Memberships": df_memberships_final,
+        "Roles": df_roles_final,
+        "Chambers": df_chambers_final,
+        "Contests": df_contests_final,
+        "Raw_Noms": df_raw
     }
 
 # -----------------------------------------------------------------------------
@@ -320,7 +388,7 @@ if view_selection == "📥 Data Ingestion & Parser":
         id_pattern = re.compile(r"([0-9]{6}\*\*\*\*[0-9]{2}\*|[0-9]{13})")
         raw_nominations = []
 
-        with st.spinner("Extracting candidate nominations and parsing ballot types..."):
+        with st.spinner("Extracting candidate nominations from PDFs..."):
             for file in pdf_files:
                 reader = pypdf.PdfReader(file)
                 for page in reader.pages:
@@ -344,16 +412,15 @@ if view_selection == "📥 Data Ingestion & Parser":
 
                             raw_muni, raw_party = split_muni_and_party(muni_and_party)
                             party_id, clean_party = clean_and_match_party(raw_party, master_party_map, sorted_keys, max_party_idx)
+                            
+                            # ID excluded; full_name captured cleanly
                             full_name = after_id.strip()
-
-                            ballot_category = "WARD" if (ward_order.isdigit() and len(ward_order) < 5) else "PR"
 
                             raw_nominations.append({
                                 "municipality": raw_muni,
                                 "party_id": party_id,
                                 "party_name": clean_party,
                                 "ward_pr_order": ward_order,
-                                "ballot_category": ballot_category,
                                 "full_name": full_name,
                             })
 
@@ -361,25 +428,9 @@ if view_selection == "📥 Data Ingestion & Parser":
             subset=["municipality", "party_id", "ward_pr_order", "full_name"]
         )
 
-        df_raw["clean_office"] = df_raw.apply(
-            lambda row: determine_popolo_office(row["municipality"], row["ward_pr_order"]),
-            axis=1
-        )
+        st.session_state["popolo_tables"] = process_full_popolo_dataset(df_raw)
+        st.success("✅ Data ingested successfully! Saved across all 6 Popolo standard tables.")
 
-        candidate_summary = df_raw.groupby("full_name").agg(
-            total_contests=("ballot_category", "count"),
-            contest_types=("clean_office", lambda x: ", ".join(sorted(set(x)))),
-            has_ward=("ballot_category", lambda x: "WARD" in list(x)),
-            has_pr=("ballot_category", lambda x: "PR" in list(x)),
-            party_name=("party_name", "first"),
-            party_id=("party_id", "first")
-        ).reset_index()
-
-        # Build & Store complete 6 Popolo Tables in Session State
-        st.session_state["popolo_tables"] = build_all_6_popolo_tables(df_raw, candidate_summary)
-        st.success("✅ Data ingested successfully! All 6 Popolo tables are now available.")
-
-    # Render Dashboard metrics if data exists in Session State
     if st.session_state["popolo_tables"] is not None:
         pop = st.session_state["popolo_tables"]
         df_persons = pop["Persons"]
@@ -387,37 +438,63 @@ if view_selection == "📥 Data Ingestion & Parser":
 
         total_candidacy_records = len(df_memberships)
         total_unique_candidates = len(df_persons)
-        ward_only_candidates = len(df_persons[df_persons["has_ward"] & ~df_persons["has_pr"]])
-        pr_only_candidates = len(df_persons[~df_persons["has_ward"] & df_persons["has_pr"]])
-        dual_candidates = len(df_persons[df_persons["has_ward"] & df_persons["has_pr"]])
 
-        unique_munis = df_memberships["municipality"].unique()
+        # Categorize candidates into Ward-Only, PR-Only, and Dual Candidates
+        candidate_lists = df_memberships.groupby("person_id")["list_type"].unique()
+        dual_candidates = sum(candidate_lists.apply(lambda x: "WARD" in x and "PR" in x))
+        ward_only_candidates = sum(candidate_lists.apply(lambda x: "WARD" in x and "PR" not in x))
+        pr_only_candidates = sum(candidate_lists.apply(lambda x: "WARD" not in x and "PR" in x))
+
+        total_ward_nominations = sum(df_memberships["list_type"] == "WARD")
+        total_pr_nominations = sum(df_memberships["list_type"] == "PR")
+
+        # Municipalities Analysis
+        unique_munis = df_memberships["Municipality"].unique()
         metro_munis = [m for m in unique_munis if any(p in m for p in METRO_PREFIXES)]
         local_district_munis = [m for m in unique_munis if m not in metro_munis]
 
+        # -----------------------------------------------------------------------------
+        # ELECTION & BALLOT STRUCTURE DETAILS
+        # -----------------------------------------------------------------------------
         st.markdown("""
             <div class="info-box">
-                <b>📌 Understanding South Africa Local Government Election (LGE) Ballot Counts:</b><br/>
-                • <b>Metropolitan Municipalities (2 Ballots):</b> Metro Council Ward + Metro Council PR.<br/>
-                • <b>All Other Municipalities (3 Ballots):</b> Local Council Ward + Local Council PR + District Council PR.<br/>
-                <i>Note: Candidates frequently run on both a Ward ballot and a PR list, creating multiple candidacy entries for one unique person.</i>
+                <b>📌 Types of Elections & Ballot System Breakdown (By Municipality Type):</b><br/>
+                • <b>Metropolitan Municipalities – 2 Ballots per Ward:</b><br/>
+                &nbsp;&nbsp;&nbsp;&nbsp;1. Metropolitan Council Ward Ballot<br/>
+                &nbsp;&nbsp;&nbsp;&nbsp;2. Metropolitan Proportional Representation (PR) Ballot<br/>
+                • <b>All Other Municipalities – 3 Ballots per Ward:</b><br/>
+                &nbsp;&nbsp;&nbsp;&nbsp;1. Local Council Ward Ballot<br/>
+                &nbsp;&nbsp;&nbsp;&nbsp;2. Local Council Proportional Representation (PR) Ballot<br/>
+                &nbsp;&nbsp;&nbsp;&nbsp;3. District Council Proportional Representation (PR) Ballot<br/>
+                <br/>
+                <i>Note: Candidates frequently stand for election in both a Ward contest and on a party's PR list, leading to multiple candidacy records for a single unique individual.</i>
             </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("### 📊 Active Dataset Metrics")
+        st.markdown("### 📊 Dataset & Candidacy Metrics")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total Candidacy Records", f"{total_candidacy_records:,}")
-        m2.metric("Unique Individual Candidates", f"{total_unique_candidates:,}")
-        m3.metric("Dual Candidates (Ward + PR)", f"{dual_candidates:,}")
-        m4.metric("Total Municipalities", f"{len(unique_munis):,}")
+        m1.metric("Total Candidacy Records", f"{total_candidacy_records:,}", help="Total contest entries across all ballots")
+        m2.metric("Unique Individual Candidates", f"{total_unique_candidates:,}", help="Unique human candidates")
+        m3.metric("Ward Nominations Count", f"{total_ward_nominations:,}", help="Total nominations for Ward seats")
+        m4.metric("PR Nominations Count", f"{total_pr_nominations:,}", help="Total nominations on PR lists")
 
+        st.markdown("##### Candidate Dual-Standing & Municipal Distribution")
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Ward-Only Candidates", f"{ward_only_candidates:,}")
-        c2.metric("PR-Only Candidates", f"{pr_only_candidates:,}")
-        c3.metric("Metropolitan Munis (2 Ballots)", f"{len(metro_munis):,}")
-        c4.metric("Local / District Munis (3 Ballots)", f"{len(local_district_munis):,}")
+        c1.metric("Dual Candidates (Ward + PR)", f"{dual_candidates:,}", help="Candidates running on BOTH Ward and PR lists")
+        c2.metric("Ward-Only Candidates", f"{ward_only_candidates:,}")
+        c3.metric("PR-Only Candidates", f"{pr_only_candidates:,}")
+        c4.metric("Total Unique Municipalities", f"{len(unique_munis):,}")
 
-        if st.button("🗑️ Clear & Reset Uploaded Data"):
+        st.markdown("##### Municipality Classification")
+        m_col1, m_col2 = st.columns(2)
+        m_col1.metric("Metropolitan Municipalities (2 Ballots)", f"{len(metro_munis):,}")
+        m_col2.metric("Local & District Municipalities (3 Ballots)", f"{len(local_district_munis):,}")
+
+        st.markdown("---")
+        st.markdown("### 🧹 Persons Table Preview")
+        st.dataframe(df_persons.head(15), use_container_width=True)
+
+        if st.button("🗑️ Clear & Reset Dataset"):
             st.session_state["popolo_tables"] = None
             st.rerun()
 
@@ -439,7 +516,7 @@ elif view_selection == "🗂️ Popolo Standard Data ":
                 st.download_button(
                     label=f"📥 Download {key} CSV",
                     data=csv_bytes,
-                    file_name=f"SA_LGE_Popolo_{key}.csv",
+                    file_name=f"Master_{key}_Cleaned_Popolo.csv",
                     mime="text/csv"
                 )
     else:
