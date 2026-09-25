@@ -1,52 +1,48 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
 import re
 import pypdf
 import os
 from datetime import datetime
 
-# Import official Perplexity SDK safely
+# Import official SDKs safely
 try:
     from perplexity import Perplexity, APIStatusError, APIConnectionError
     PERPLEXITY_AVAILABLE = True
 except ImportError:
     PERPLEXITY_AVAILABLE = False
 
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+
 # -----------------------------------------------------------------------------
 # 1. PAGE CONFIG & EXECUTIVE DARK THEME (CSS)
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="PEP & Candidate Data Intelligence Dashboard",
+    page_title="African PEP & Candidate Data Intelligence",
     page_icon="🌍",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for Modern Executive UI
 st.markdown("""
     <style>
-        /* Main background and base font */
         .stApp {
             background: linear-gradient(135deg, #090d16 0%, #0f172a 100%);
             color: #f1f5f9;
             font-family: 'Inter', system-ui, -apple-system, sans-serif;
         }
+        .block-container { padding-top: 1.5rem; padding-bottom: 2rem; max-width: 95%; }
         
-        .block-container {
-            padding-top: 1.5rem;
-            padding-bottom: 2rem;
-            max-width: 95%;
-        }
-
-        /* Sidebar Styling */
         section[data-testid="stSidebar"] {
             background-color: #0b1120 !important;
             border-right: 1px solid #1e293b;
         }
 
-        /* Executive Header Container */
         .header-card {
             background: linear-gradient(90deg, #1e293b 0%, #0f172a 100%);
             border: 1px solid #334155;
@@ -59,14 +55,7 @@ st.markdown("""
             align-items: center;
         }
 
-        .header-title {
-            font-size: 24px;
-            font-weight: 700;
-            color: #ffffff;
-            margin: 0;
-            letter-spacing: -0.5px;
-        }
-
+        .header-title { font-size: 24px; font-weight: 700; color: #ffffff; margin: 0; }
         .header-badge {
             background: rgba(56, 189, 248, 0.1);
             color: #38bdf8;
@@ -77,45 +66,16 @@ st.markdown("""
             font-weight: 600;
         }
 
-        /* Cards & Content Containers */
         .ui-card {
             background: #111827;
             border: 1px solid #1f2937;
             border-radius: 12px;
             padding: 20px;
             margin-bottom: 16px;
-            transition: transform 0.2s ease, border-color 0.2s ease;
-        }
-        
-        .ui-card:hover {
-            border-color: #38bdf8;
         }
 
-        /* Metric Tiles */
-        div[data-testid="stMetricValue"] {
-            color: #38bdf8 !important;
-            font-weight: 700;
-            font-size: 26px;
-        }
-        
-        .stMetric {
-            background-color: #0f172a;
-            border: 1px solid #1e293b;
-            border-radius: 10px;
-            padding: 14px;
-            box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
-        }
-
-        /* Buttons Styling */
-        .stButton>button {
-            border-radius: 8px;
-            font-weight: 600;
-            transition: all 0.2s ease;
-        }
-
-        /* Custom Badges */
-        .badge-verified { background-color: #064e3b; color: #34d399; border: 1px solid #059669; padding: 2px 8px; border-radius: 6px; font-size: 11px; }
-        .badge-pending { background-color: #451a03; color: #fbbf24; border: 1px solid #d97706; padding: 2px 8px; border-radius: 6px; font-size: 11px; }
+        div[data-testid="stMetricValue"] { color: #38bdf8 !important; font-weight: 700; font-size: 26px; }
+        .stMetric { background-color: #0f172a; border: 1px solid #1e293b; border-radius: 10px; padding: 14px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -125,30 +85,15 @@ st.markdown("""
 EXPLICIT_TIERS = {
     "Ethiopia 🇪🇹": {
         "code": "ET",
-        "tiers": [
-            "House of Peoples' Representatives (HOPR)",
-            "Regional State Council",
-            "Executive Members / Administration"
-        ]
+        "tiers": ["House of Peoples' Representatives (HOPR)", "Regional State Council", "Executive Members / Administration"]
     },
     "South Africa 🇿🇦": {
         "code": "ZA",
-        "tiers": [
-            "National Assembly (National List)",
-            "National Assembly (Regional List)",
-            "Provincial Legislature",
-            "Local Government / Municipal Council"
-        ]
+        "tiers": ["National Assembly (National List)", "National Assembly (Regional List)", "Provincial Legislature", "Local Government / Municipal Council"]
     },
     "Kenya 🇰🇪": {
         "code": "KE",
-        "tiers": [
-            "Presidential Candidate",
-            "Senatorial Candidate",
-            "Member of National Assembly (MP)",
-            "County Woman Representative",
-            "Member of County Assembly (MCA)"
-        ]
+        "tiers": ["Presidential Candidate", "Senatorial Candidate", "Member of National Assembly (MP)", "County Woman Representative", "Member of County Assembly (MCA)"]
     }
 }
 
@@ -188,23 +133,33 @@ SOCIAL_PLATFORMS = [
 ]
 
 # -----------------------------------------------------------------------------
-# 3. PERPLEXITY SEARCH API INTEGRATION ENGINE
+# 3. API CLIENTS RESOLUTION (GROQ & PERPLEXITY)
 # -----------------------------------------------------------------------------
 def get_perplexity_client():
-    """Resolves API key from st.secrets or os.environ safely."""
+    """Resolves Perplexity API key from st.secrets or os.environ safely."""
     api_key = st.secrets.get("PERPLEXITY_API_KEY", os.environ.get("PERPLEXITY_API_KEY", ""))
-    if not api_key:
+    if not api_key or not PERPLEXITY_AVAILABLE:
         return None
     try:
         return Perplexity(api_key=api_key)
     except Exception:
         return None
 
+def get_groq_client():
+    """Resolves Groq API key from st.secrets or os.environ safely."""
+    api_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
+    if not api_key or not GROQ_AVAILABLE:
+        return None
+    try:
+        return Groq(api_key=api_key)
+    except Exception:
+        return None
+
 def run_perplexity_entity_search(query_list: list, country_name: str, max_results: int = 5):
-    """Executes POST /search using Perplexity SDK with multi-query support & URL deduplication."""
+    """Executes POST /search using Perplexity Search API."""
     client = get_perplexity_client()
     if not client:
-        return None, "PERPLEXITY_API_KEY is missing. Please set it in Streamlit Secrets or terminal environment variables."
+        return None, "PERPLEXITY_API_KEY is missing. Add it to Streamlit Secrets."
 
     try:
         iso_code = EXPLICIT_TIERS.get(country_name, {}).get("code", None)
@@ -229,18 +184,23 @@ def run_perplexity_entity_search(query_list: list, country_name: str, max_result
                     "date": getattr(item, "date", None)
                 })
         return deduped_results, None
-
-    except APIStatusError as e:
-        if e.status_code == 401:
-            return None, "401 Authentication Error: Invalid PERPLEXITY_API_KEY."
-        elif e.status_code == 429:
-            return None, "429 Rate Limit Exceeded: Honoring retry-after period."
-        else:
-            return None, f"Perplexity API Error [{e.status_code}]: {str(e)}"
-    except APIConnectionError:
-        return None, "Connection error: Failed to reach api.perplexity.ai."
     except Exception as e:
-        return None, f"Search failed: {str(e)}"
+        return None, f"Perplexity Search failed: {str(e)}"
+
+def run_groq_completion(prompt: str, model: str = "llama-3.3-70b-versatile"):
+    """Executes chat completion via Groq LLM API."""
+    client = get_groq_client()
+    if not client:
+        return None, "GROQ_API_KEY is missing. Add it to Streamlit Secrets."
+    try:
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model=model,
+            temperature=0.2
+        )
+        return response.choices[0].message.content, None
+    except Exception as e:
+        return None, f"Groq execution failed: {str(e)}"
 
 # -----------------------------------------------------------------------------
 # 4. PARSER & POPOLO SCHEMA BUILDER
@@ -308,15 +268,14 @@ def build_popolo_tables(raw_df: pd.DataFrame, country: str, tier: str):
     }
 
 # -----------------------------------------------------------------------------
-# 5. STREAMLINED SIDEBAR NAVIGATION
+# 5. SIDEBAR NAVIGATION & DIAGNOSTICS
 # -----------------------------------------------------------------------------
 st.sidebar.markdown("## 🌍 PEP Intelligence")
 st.sidebar.caption("African Candidate & Political Data Hub")
 st.sidebar.markdown("---")
 
-# Section 1: Country & Scope Controls
 st.sidebar.markdown("##### 📍 Target Jurisdiction")
-selected_country = st.sidebar.selectbox("Country", ALL_AFRICAN_COUNTRIES, index=45) # Default to South Africa
+selected_country = st.sidebar.selectbox("Country", ALL_AFRICAN_COUNTRIES, index=45)
 
 if selected_country in EXPLICIT_TIERS:
     available_tiers = EXPLICIT_TIERS[selected_country]["tiers"]
@@ -327,33 +286,39 @@ selected_tier = st.sidebar.selectbox("Scope Tier / Office", available_tiers)
 
 st.sidebar.markdown("---")
 
-# Section 2: Main Module Navigation
 st.sidebar.markdown("##### 🧭 Module Navigation")
 view_selection = st.sidebar.radio(
     "Go to",
     [
         "📥 Data Ingestion & Parser",
         "🗂️ Popolo Standard Data (6 Tabs)",
-        "🌐 Perplexity Entity Search Engine"
+        "🌐 Perplexity Search API",
+        "⚡ Groq AI Summarizer"
     ],
     label_visibility="collapsed"
 )
 
 st.sidebar.markdown("---")
 
-# Section 3: Live API Status Tracker
-st.sidebar.markdown("##### ⚙️ System Diagnostics")
-perplexity_client_check = get_perplexity_client()
-if perplexity_client_check:
+# Diagnostics
+st.sidebar.markdown("##### ⚙️ API Diagnostics")
+p_check = get_perplexity_client()
+g_check = get_groq_client()
+
+if p_check:
     st.sidebar.success("⚡ Perplexity API: Active")
 else:
     st.sidebar.warning("🔑 Perplexity API: Key Missing")
+
+if g_check:
+    st.sidebar.success("⚡ Groq API: Active")
+else:
+    st.sidebar.warning("🔑 Groq API: Key Missing")
 
 # -----------------------------------------------------------------------------
 # 6. MAIN WORKSPACE CONTENT
 # -----------------------------------------------------------------------------
 
-# Dynamic Header Bar
 st.markdown(f"""
     <div class="header-card">
         <div>
@@ -401,7 +366,6 @@ if view_selection == "📥 Data Ingestion & Parser":
             df_raw = pd.DataFrame(raw_records)
             st.session_state["popolo_tables"] = build_popolo_tables(df_raw, selected_country, selected_tier)
             
-            # Quick Stats Metrics
             c1, c2, c3 = st.columns(3)
             c1.metric("Parsed Candidates", f"{len(df_raw):,}")
             c2.metric("Unique Parties", len(st.session_state["popolo_tables"]["Parties"]))
@@ -415,17 +379,13 @@ elif view_selection == "🗂️ Popolo Standard Data (6 Tabs)":
     if "popolo_tables" in st.session_state:
         pop = st.session_state["popolo_tables"]
         
-        tabs = st.tabs([
-            "1. Persons", "2. Parties", "3. Memberships", 
-            "4. Roles", "5. Chambers", "6. Contests"
-        ])
+        tabs = st.tabs(["1. Persons", "2. Parties", "3. Memberships", "4. Roles", "5. Chambers", "6. Contests"])
         tab_names = ["Persons", "Parties", "Memberships", "Roles", "Chambers", "Contests"]
 
         for idx, tab in enumerate(tabs):
             with tab:
                 key = tab_names[idx]
                 curr_df = pop[key]
-                
                 st.dataframe(curr_df, use_container_width=True)
                 
                 csv_bytes = curr_df.to_csv(index=False).encode('utf-8')
@@ -433,29 +393,21 @@ elif view_selection == "🗂️ Popolo Standard Data (6 Tabs)":
                     label=f"📥 Download {key} CSV Data",
                     data=csv_bytes,
                     file_name=f"{selected_country}_{selected_tier}_{key}.csv",
-                    mime="text/csv",
-                    type="secondary"
+                    mime="text/csv"
                 )
     else:
-        st.info("💡 Please upload candidate lists in the **Data Ingestion & Parser** module to generate Popolo standard tables.")
+        st.info("💡 Please upload candidate lists in the **Data Ingestion & Parser** module to generate Popolo tables.")
 
 # MODULE 3: PERPLEXITY SEARCH
-elif view_selection == "🌐 Perplexity Entity Search Engine":
+elif view_selection == "🌐 Perplexity Search API":
     if "popolo_tables" in st.session_state:
         df_persons = st.session_state["popolo_tables"]["Persons"]
         df_parties = st.session_state["popolo_tables"]["Parties"]
 
-        target_tab = st.radio("Search Focus", ["👤 Candidate Search", "🏛️ Party Search"], horizontal=True)
+        target_tab = st.radio("Search Scope", ["👤 Candidate Search", "🏛️ Party Search"], horizontal=True)
 
         if target_tab == "👤 Candidate Search":
-            st.markdown("##### Candidate Social Media Handle Discovery")
-            
-            selected_cand_idx = st.selectbox(
-                "Select Candidate", 
-                df_persons.index, 
-                format_func=lambda i: f"{df_persons.at[i, 'full_name']} — {df_persons.at[i, 'party_name']}"
-            )
-            
+            selected_cand_idx = st.selectbox("Select Candidate", df_persons.index, format_func=lambda i: f"{df_persons.at[i, 'full_name']} — {df_persons.at[i, 'party_name']}")
             cand_row = df_persons.loc[selected_cand_idx]
             
             queries = [
@@ -463,7 +415,7 @@ elif view_selection == "🌐 Perplexity Entity Search Engine":
                 f'"{cand_row["full_name"]}" candidate {selected_country} facebook'
             ]
 
-            if st.button("🔎 Run Web Search via Perplexity", type="primary"):
+            if st.button("🔎 Run Search via Perplexity", type="primary"):
                 with st.spinner("Searching live web indexes..."):
                     results, err = run_perplexity_entity_search(queries, country_name=selected_country)
                     if err:
@@ -480,14 +432,7 @@ elif view_selection == "🌐 Perplexity Entity Search Engine":
                                     st.success(f"Attached link to {cand_row['full_name']}!")
 
         elif target_tab == "🏛️ Party Search":
-            st.markdown("##### Political Party Domain Discovery")
-            
-            selected_party_idx = st.selectbox(
-                "Select Political Party", 
-                df_parties.index, 
-                format_func=lambda i: f"{df_parties.at[i, 'party_name']} ({df_parties.at[i, 'abbrv']})"
-            )
-            
+            selected_party_idx = st.selectbox("Select Political Party", df_parties.index, format_func=lambda i: f"{df_parties.at[i, 'party_name']} ({df_parties.at[i, 'abbrv']})")
             party_row = df_parties.loc[selected_party_idx]
             p_queries = [f'"{party_row["party_name"]}" official website {selected_country}']
 
@@ -502,3 +447,28 @@ elif view_selection == "🌐 Perplexity Entity Search Engine":
                             st.caption(p_res['snippet'])
     else:
         st.info("💡 Upload data in the **Data Ingestion & Parser** module to enable web search verification.")
+
+# MODULE 4: GROQ AI SUMMARIZER
+elif view_selection == "⚡ Groq AI Summarizer":
+    st.markdown("##### Ultra-Fast Candidate Risk & Bio Summarizer via Groq LLM")
+    
+    if "popolo_tables" in st.session_state:
+        df_persons = st.session_state["popolo_tables"]["Persons"]
+        selected_cand_idx = st.selectbox("Select Candidate to Summarize", df_persons.index, format_func=lambda i: f"{df_persons.at[i, 'full_name']} ({df_persons.at[i, 'party_name']})")
+        cand_row = df_persons.loc[selected_cand_idx]
+
+        custom_prompt = st.text_area(
+            "Prompt Strategy",
+            value=f"Provide a short PEP (Politically Exposed Person) risk profile summary for candidate '{cand_row['full_name']}', running for office '{selected_tier}' under party '{cand_row['party_name']}' in {selected_country}."
+        )
+
+        if st.button("⚡ Generate Profile via Groq LLM", type="primary"):
+            with st.spinner("Generating summary via Groq Llama-3..."):
+                summary, err = run_groq_completion(custom_prompt)
+                if err:
+                    st.error(err)
+                else:
+                    st.markdown("### 📝 Candidate Risk Profile Summary")
+                    st.info(summary)
+    else:
+        st.info("💡 Please ingest candidate data first to run Groq summaries.")
