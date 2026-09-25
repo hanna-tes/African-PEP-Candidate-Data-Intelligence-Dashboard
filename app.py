@@ -19,7 +19,7 @@ except ImportError:
     GROQ_AVAILABLE = False
 
 # -----------------------------------------------------------------------------
-# 1. PAGE CONFIG & EXECUTIVE DARK THEME
+# 1. PAGE CONFIG & DARK THEME
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="African PEP & Candidate Data Intelligence",
@@ -87,6 +87,10 @@ st.markdown("""
         .stMetric { background-color: #0f172a; border: 1px solid #1e293b; border-radius: 10px; padding: 12px; }
     </style>
 """, unsafe_allow_html=True)
+
+# Initialize Session State Storage
+if "popolo_tables" not in st.session_state:
+    st.session_state["popolo_tables"] = None
 
 # -----------------------------------------------------------------------------
 # 2. PARSER & MUNICIPAL ELECTION LOGIC HELPERS
@@ -198,6 +202,47 @@ def determine_popolo_office(muni_str, ward_order_str):
     else:
         return "Local Council Ward" if is_ward else "Local Council PR"
 
+def build_all_6_popolo_tables(df_raw, candidate_summary):
+    # 1. Persons Table
+    df_persons = candidate_summary.copy()
+    df_persons["id"] = [f"pers_{i+1:05d}" for i in range(len(df_persons))]
+    df_persons[["first_name", "middle_name", "last_name"]] = df_persons["full_name"].apply(lambda x: pd.Series(parse_name(x)))
+    df_persons["gender"] = "Unspecified"
+
+    # 2. Parties Table
+    df_parties = df_raw[["party_id", "party_name"]].drop_duplicates().reset_index(drop=True)
+    df_parties["country"] = "South Africa"
+
+    # 3. Memberships Table
+    df_memberships = df_raw.merge(df_persons[["full_name", "id"]], on="full_name", how="left").rename(columns={"id": "person_id"})
+    df_memberships["membership_id"] = [f"mshp_{i+1:06d}" for i in range(len(df_memberships))]
+
+    # 4. Roles Table
+    df_roles = pd.DataFrame([
+        {"role_id": "role_ward", "role_title": "Ward Councillor Candidate", "jurisdiction": "South Africa"},
+        {"role_id": "role_pr", "role_title": "Proportional Representation Candidate", "jurisdiction": "South Africa"}
+    ])
+
+    # 5. Chambers Table
+    df_chambers = pd.DataFrame([
+        {"chamber_id": "ch_metro", "chamber_name": "Metropolitan Municipal Council", "country": "South Africa"},
+        {"chamber_id": "ch_local", "chamber_name": "Local Municipal Council", "country": "South Africa"},
+        {"chamber_id": "ch_district", "chamber_name": "District Municipal Council", "country": "South Africa"}
+    ])
+
+    # 6. Contests Table
+    df_contests = df_raw[["municipality", "ward_pr_order", "clean_office"]].drop_duplicates().reset_index(drop=True)
+    df_contests["contest_id"] = [f"cntst_{i+1:05d}" for i in range(len(df_contests))]
+
+    return {
+        "Persons": df_persons,
+        "Parties": df_parties,
+        "Memberships": df_memberships,
+        "Roles": df_roles,
+        "Chambers": df_chambers,
+        "Contests": df_contests
+    }
+
 # -----------------------------------------------------------------------------
 # 3. API CLIENT RESOLUTION
 # -----------------------------------------------------------------------------
@@ -239,18 +284,16 @@ view_selection = st.sidebar.radio(
 st.sidebar.markdown("---")
 st.sidebar.markdown("##### ⚙️ API Diagnostics")
 
-# Perplexity API Check
 if get_perplexity_client():
     st.sidebar.success("⚡ Perplexity API Active")
 else:
     st.sidebar.warning("🔑 Perplexity Key Missing")
 
-# Groq API Check
 if get_groq_client():
     st.sidebar.success("⚡ Groq API Active")
 else:
     st.sidebar.warning("🔑 Groq Key Missing")
-    
+
 # -----------------------------------------------------------------------------
 # 5. WORKSPACE MODULES
 # -----------------------------------------------------------------------------
@@ -314,7 +357,6 @@ if view_selection == "📥 Data Ingestion & Parser":
                                 "full_name": full_name,
                             })
 
-        # Master Raw Dataframe of all Candidacies
         df_raw = pd.DataFrame(raw_nominations).drop_duplicates(
             subset=["municipality", "party_id", "ward_pr_order", "full_name"]
         )
@@ -324,12 +366,6 @@ if view_selection == "📥 Data Ingestion & Parser":
             axis=1
         )
 
-        # -----------------------------------------------------------------------------
-        # CANDIDATE & BALLOT DEDUPLICATION STATS
-        # -----------------------------------------------------------------------------
-        total_candidacy_records = len(df_raw)
-        
-        # Categorize per candidate
         candidate_summary = df_raw.groupby("full_name").agg(
             total_contests=("ballot_category", "count"),
             contest_types=("clean_office", lambda x: ", ".join(sorted(set(x)))),
@@ -339,33 +375,26 @@ if view_selection == "📥 Data Ingestion & Parser":
             party_id=("party_id", "first")
         ).reset_index()
 
-        total_unique_candidates = len(candidate_summary)
-        ward_only_candidates = len(candidate_summary[candidate_summary["has_ward"] & ~candidate_summary["has_pr"]])
-        pr_only_candidates = len(candidate_summary[~candidate_summary["has_ward"] & candidate_summary["has_pr"]])
-        dual_candidates = len(candidate_summary[candidate_summary["has_ward"] & candidate_summary["has_pr"]])
+        # Build & Store complete 6 Popolo Tables in Session State
+        st.session_state["popolo_tables"] = build_all_6_popolo_tables(df_raw, candidate_summary)
+        st.success("✅ Data ingested successfully! All 6 Popolo tables are now available.")
 
-        # Municipality breakdown
-        unique_munis = df_raw["municipality"].unique()
+    # Render Dashboard metrics if data exists in Session State
+    if st.session_state["popolo_tables"] is not None:
+        pop = st.session_state["popolo_tables"]
+        df_persons = pop["Persons"]
+        df_memberships = pop["Memberships"]
+
+        total_candidacy_records = len(df_memberships)
+        total_unique_candidates = len(df_persons)
+        ward_only_candidates = len(df_persons[df_persons["has_ward"] & ~df_persons["has_pr"]])
+        pr_only_candidates = len(df_persons[~df_persons["has_ward"] & df_persons["has_pr"]])
+        dual_candidates = len(df_persons[df_persons["has_ward"] & df_persons["has_pr"]])
+
+        unique_munis = df_memberships["municipality"].unique()
         metro_munis = [m for m in unique_munis if any(p in m for p in METRO_PREFIXES)]
         local_district_munis = [m for m in unique_munis if m not in metro_munis]
 
-        # Construct Persons Table with explicit contest tags
-        df_persons = candidate_summary.copy()
-        df_persons["id"] = [f"pers_{i+1:05d}" for i in range(len(df_persons))]
-        df_persons[["first_name", "middle_name", "last_name"]] = df_persons["full_name"].apply(lambda x: pd.Series(parse_name(x)))
-        df_persons["is_dual_candidate"] = df_persons.apply(lambda r: "Yes (Ward + PR)" if (r["has_ward"] and r["has_pr"]) else "No", axis=1)
-
-        df_parties = df_raw[["party_id", "party_name"]].drop_duplicates().reset_index(drop=True)
-
-        st.session_state["popolo_tables"] = {
-            "Persons": df_persons,
-            "Parties": df_parties,
-            "Memberships": df_raw
-        }
-
-        # -----------------------------------------------------------------------------
-        # UI DISPLAY: BALLOT BREAKDOWN SUMMARY
-        # -----------------------------------------------------------------------------
         st.markdown("""
             <div class="info-box">
                 <b>📌 Understanding South Africa Local Government Election (LGE) Ballot Counts:</b><br/>
@@ -375,39 +404,43 @@ if view_selection == "📥 Data Ingestion & Parser":
             </div>
         """, unsafe_allow_html=True)
 
-        # Primary Metrics
-        st.markdown("### 📊 Candidate & Ballot Metrics")
+        st.markdown("### 📊 Active Dataset Metrics")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total Candidacy Records", f"{total_candidacy_records:,}", help="All registered entries across all ballots")
-        m2.metric("Unique Individual Candidates", f"{total_unique_candidates:,}", help="Unique human candidates")
-        m3.metric("Dual Candidates (Ward + PR)", f"{dual_candidates:,}", help="Candidates appearing on BOTH Ward and PR lists")
-        m4.metric("Total Municipalities", f"{len(unique_munis):,}", help="Unique Municipalities parsed")
+        m1.metric("Total Candidacy Records", f"{total_candidacy_records:,}")
+        m2.metric("Unique Individual Candidates", f"{total_unique_candidates:,}")
+        m3.metric("Dual Candidates (Ward + PR)", f"{dual_candidates:,}")
+        m4.metric("Total Municipalities", f"{len(unique_munis):,}")
 
-        # Secondary Detailed Metrics
-        st.markdown("##### Detailed Breakdown by Candidate List & Municipality Type")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Ward-Only Candidates", f"{ward_only_candidates:,}")
         c2.metric("PR-Only Candidates", f"{pr_only_candidates:,}")
-        c3.metric("Metropolitan Council Munis (2 Ballots)", f"{len(metro_munis):,}")
+        c3.metric("Metropolitan Munis (2 Ballots)", f"{len(metro_munis):,}")
         c4.metric("Local / District Munis (3 Ballots)", f"{len(local_district_munis):,}")
 
-        st.markdown("---")
-        st.markdown("### 🧹 Persons Table Preview (With Dual-Candidacy Tags)")
-        st.dataframe(
-            df_persons[["id", "full_name", "party_name", "is_dual_candidate", "total_contests", "contest_types"]].head(15),
-            use_container_width=True
-        )
+        if st.button("🗑️ Clear & Reset Uploaded Data"):
+            st.session_state["popolo_tables"] = None
+            st.rerun()
 
 elif view_selection == "🗂️ Popolo Standard Data ":
-    if "popolo_tables" in st.session_state:
-        for tab_name, df_table in st.session_state["popolo_tables"].items():
-            st.subheader(f"{tab_name} Table")
-            st.dataframe(df_table, use_container_width=True)
-            st.download_button(
-                f"📥 Download {tab_name} CSV",
-                df_table.to_csv(index=False).encode('utf-8'),
-                f"SA_LGE_{tab_name}.csv",
-                "text/csv"
-            )
+    if st.session_state["popolo_tables"] is not None:
+        pop = st.session_state["popolo_tables"]
+        
+        tab_names = ["Persons", "Parties", "Memberships", "Roles", "Chambers", "Contests"]
+        tabs = st.tabs([f"{i+1}. {name}" for i, name in enumerate(tab_names)])
+
+        for idx, tab in enumerate(tabs):
+            with tab:
+                key = tab_names[idx]
+                curr_df = pop[key]
+                st.write(f"### {key} Table ({len(curr_df):,} records)")
+                st.dataframe(curr_df, use_container_width=True)
+                
+                csv_bytes = curr_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label=f"📥 Download {key} CSV",
+                    data=csv_bytes,
+                    file_name=f"SA_LGE_Popolo_{key}.csv",
+                    mime="text/csv"
+                )
     else:
-        st.info("💡 Please upload candidate lists in the Data Ingestion module.")
+        st.info("💡 No active dataset found. Please upload candidate PDFs in the **Data Ingestion & Parser** tab first.")
