@@ -238,9 +238,19 @@ view_selection = st.sidebar.radio(
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("##### ⚙️ API Diagnostics")
-st.sidebar.success("⚡ Perplexity API Active") if get_perplexity_client() else st.sidebar.warning("🔑 Perplexity Key Missing")
-st.sidebar.success("⚡ Groq API Active") if get_groq_client() else st.sidebar.warning("🔑 Groq Key Missing")
 
+# Perplexity API Check
+if get_perplexity_client():
+    st.sidebar.success("⚡ Perplexity API Active")
+else:
+    st.sidebar.warning("🔑 Perplexity Key Missing")
+
+# Groq API Check
+if get_groq_client():
+    st.sidebar.success("⚡ Groq API Active")
+else:
+    st.sidebar.warning("🔑 Groq Key Missing")
+    
 # -----------------------------------------------------------------------------
 # 5. WORKSPACE MODULES
 # -----------------------------------------------------------------------------
