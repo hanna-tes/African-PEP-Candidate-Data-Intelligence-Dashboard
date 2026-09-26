@@ -65,14 +65,6 @@ st.markdown("""
             font-weight: 600;
         }
 
-        .ui-card {
-            background: #111827;
-            border: 1px solid #1f2937;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 16px;
-        }
-
         .info-box {
             background-color: #0b1329;
             border-left: 4px solid #38bdf8;
@@ -88,7 +80,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Initialize Persistent Session State Data Storage
+# Persistent Session State Storage
 if "popolo_tables" not in st.session_state:
     st.session_state["popolo_tables"] = None
 
@@ -377,6 +369,9 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
+# -----------------------------------------------------------------------------
+# TAB 1: DATA INGESTION & PARSER
+# -----------------------------------------------------------------------------
 if view_selection == "📥 Data Ingestion & Parser":
     party_file = st.file_uploader("Upload Party Master CSV (Optional)", type=["csv"])
     pdf_files = st.file_uploader("Upload Certified Candidate List PDFs", type=["pdf"], accept_multiple_files=True)
@@ -413,7 +408,6 @@ if view_selection == "📥 Data Ingestion & Parser":
                             raw_muni, raw_party = split_muni_and_party(muni_and_party)
                             party_id, clean_party = clean_and_match_party(raw_party, master_party_map, sorted_keys, max_party_idx)
                             
-                            # ID excluded; full_name captured cleanly
                             full_name = after_id.strip()
 
                             raw_nominations.append({
@@ -439,7 +433,6 @@ if view_selection == "📥 Data Ingestion & Parser":
         total_candidacy_records = len(df_memberships)
         total_unique_candidates = len(df_persons)
 
-        # Categorize candidates into Ward-Only, PR-Only, and Dual Candidates
         candidate_lists = df_memberships.groupby("person_id")["list_type"].unique()
         dual_candidates = sum(candidate_lists.apply(lambda x: "WARD" in x and "PR" in x))
         ward_only_candidates = sum(candidate_lists.apply(lambda x: "WARD" in x and "PR" not in x))
@@ -448,14 +441,10 @@ if view_selection == "📥 Data Ingestion & Parser":
         total_ward_nominations = sum(df_memberships["list_type"] == "WARD")
         total_pr_nominations = sum(df_memberships["list_type"] == "PR")
 
-        # Municipalities Analysis
         unique_munis = df_memberships["Municipality"].unique()
         metro_munis = [m for m in unique_munis if any(p in m for p in METRO_PREFIXES)]
         local_district_munis = [m for m in unique_munis if m not in metro_munis]
 
-        # -----------------------------------------------------------------------------
-        # ELECTION & BALLOT STRUCTURE DETAILS
-        # -----------------------------------------------------------------------------
         st.markdown("""
             <div class="info-box">
                 <b>📌 Types of Elections & Ballot System Breakdown (By Municipality Type):</b><br/>
@@ -473,14 +462,14 @@ if view_selection == "📥 Data Ingestion & Parser":
 
         st.markdown("### 📊 Dataset & Candidacy Metrics")
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total Candidacy Records", f"{total_candidacy_records:,}", help="Total contest entries across all ballots")
-        m2.metric("Unique Individual Candidates", f"{total_unique_candidates:,}", help="Unique human candidates")
-        m3.metric("Ward Nominations Count", f"{total_ward_nominations:,}", help="Total nominations for Ward seats")
-        m4.metric("PR Nominations Count", f"{total_pr_nominations:,}", help="Total nominations on PR lists")
+        m1.metric("Total Candidacy Records", f"{total_candidacy_records:,}")
+        m2.metric("Unique Individual Candidates", f"{total_unique_candidates:,}")
+        m3.metric("Ward Nominations Count", f"{total_ward_nominations:,}")
+        m4.metric("PR Nominations Count", f"{total_pr_nominations:,}")
 
         st.markdown("##### Candidate Dual-Standing & Municipal Distribution")
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Dual Candidates (Ward + PR)", f"{dual_candidates:,}", help="Candidates running on BOTH Ward and PR lists")
+        c1.metric("Dual Candidates (Ward + PR)", f"{dual_candidates:,}")
         c2.metric("Ward-Only Candidates", f"{ward_only_candidates:,}")
         c3.metric("PR-Only Candidates", f"{pr_only_candidates:,}")
         c4.metric("Total Unique Municipalities", f"{len(unique_munis):,}")
@@ -498,8 +487,11 @@ if view_selection == "📥 Data Ingestion & Parser":
             st.session_state["popolo_tables"] = None
             st.rerun()
 
-elif view_selection == "🗂️ Popolo Standard Data ":
-    if st.session_state["popolo_tables"] is not None:
+# -----------------------------------------------------------------------------
+# TAB 2: POPOLO STANDARD DATA (6 TABS)
+# -----------------------------------------------------------------------------
+elif view_selection == "🗂️ Popolo Standard Data":
+    if st.session_state.get("popolo_tables") is not None:
         pop = st.session_state["popolo_tables"]
         
         tab_names = ["Persons", "Parties", "Memberships", "Roles", "Chambers", "Contests"]
@@ -509,7 +501,7 @@ elif view_selection == "🗂️ Popolo Standard Data ":
             with tab:
                 key = tab_names[idx]
                 curr_df = pop[key]
-                st.write(f"### {key} Table ({len(curr_df):,} records)")
+                st.markdown(f"### {key} Table ({len(curr_df):,} records)")
                 st.dataframe(curr_df, use_container_width=True)
                 
                 csv_bytes = curr_df.to_csv(index=False).encode('utf-8')
@@ -520,4 +512,18 @@ elif view_selection == "🗂️ Popolo Standard Data ":
                     mime="text/csv"
                 )
     else:
-        st.info("💡 No active dataset found. Please upload candidate PDFs in the **Data Ingestion & Parser** tab first.")
+        st.info("💡 No active dataset found in memory. Please upload candidate PDFs in the **Data Ingestion & Parser** tab first.")
+
+# -----------------------------------------------------------------------------
+# TAB 3: PERPLEXITY SEARCH API
+# -----------------------------------------------------------------------------
+elif view_selection == "🌐 Perplexity Search API":
+    st.write("### Perplexity Search Hub")
+    st.info("Query real-time intelligence for South African political entities and PEPs.")
+
+# -----------------------------------------------------------------------------
+# TAB 4: GROQ AI SUMMARIZER
+# -----------------------------------------------------------------------------
+elif view_selection == "⚡ Groq AI Summarizer":
+    st.write("### Groq High-Speed AI Analysis")
+    st.info("Generate high-speed summaries and reports for candidates and political parties.")
