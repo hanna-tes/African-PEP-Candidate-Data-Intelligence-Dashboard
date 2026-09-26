@@ -360,7 +360,7 @@ st.sidebar.markdown("---")
 
 nav_options = {
     "ingest": "📥 Data Ingestion & Parser",
-    "popolo": "🗂️ Popolo Standard Data (6 Tabs)",
+    "popolo": "🗂️ Popolo Standard Data",
     "perplexity": "🌐 Perplexity Search API",
     "groq": "⚡ Groq AI Summarizer"
 }
