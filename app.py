@@ -80,7 +80,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Persistent Session State Storage
+# Session State Storage
 if "popolo_tables" not in st.session_state:
     st.session_state["popolo_tables"] = None
 
@@ -325,21 +325,26 @@ def get_groq_client():
         return None
 
 # -----------------------------------------------------------------------------
-# 4. SIDEBAR & NAVIGATION
+# 4. SIDEBAR & NAVIGATION (Robust Enum Mapping)
 # -----------------------------------------------------------------------------
 st.sidebar.markdown("## 🌍 PEP Intelligence")
 st.sidebar.caption("South Africa LGE Candidate Engine")
 st.sidebar.markdown("---")
 
-view_selection = st.sidebar.radio(
+nav_options = {
+    "ingest": "📥 Data Ingestion & Parser",
+    "popolo": "🗂️ Popolo Standard Data (6 Tabs)",
+    "perplexity": "🌐 Perplexity Search API",
+    "groq": "⚡ Groq AI Summarizer"
+}
+
+selected_label = st.sidebar.radio(
     "Go to",
-    [
-        "📥 Data Ingestion & Parser",
-        "🗂️ Popolo Standard Data (6 Tabs)",
-        "🌐 Perplexity Search API",
-        "⚡ Groq AI Summarizer"
-    ]
+    options=list(nav_options.values())
 )
+
+# Extract internal key safely
+view_key = [k for k, v in nav_options.items() if v == selected_label][0]
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("##### ⚙️ API Diagnostics")
@@ -354,13 +359,11 @@ if get_groq_client():
 else:
     st.sidebar.warning("🔑 Groq Key Missing")
 
-# -----------------------------------------------------------------------------
-# 5. WORKSPACE MODULES
-# -----------------------------------------------------------------------------
+# Header Rendering
 st.markdown(f"""
     <div class="header-card">
         <div>
-            <h1 class="header-title">{view_selection}</h1>
+            <h1 class="header-title">{selected_label}</h1>
             <span style="color: #94a3b8; font-size: 13px;">South Africa LGE Candidate Analysis Hub</span>
         </div>
         <div>
@@ -370,9 +373,9 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# TAB 1: DATA INGESTION & PARSER
+# VIEW 1: DATA INGESTION & PARSER
 # -----------------------------------------------------------------------------
-if view_selection == "📥 Data Ingestion & Parser":
+if view_key == "ingest":
     party_file = st.file_uploader("Upload Party Master CSV (Optional)", type=["csv"])
     pdf_files = st.file_uploader("Upload Certified Candidate List PDFs", type=["pdf"], accept_multiple_files=True)
 
@@ -488,9 +491,9 @@ if view_selection == "📥 Data Ingestion & Parser":
             st.rerun()
 
 # -----------------------------------------------------------------------------
-# TAB 2: POPOLO STANDARD DATA (6 TABS)
+# VIEW 2: POPOLO STANDARD DATA (6 TABS)
 # -----------------------------------------------------------------------------
-elif view_selection == "🗂️ Popolo Standard Data":
+elif view_key == "popolo":
     if st.session_state.get("popolo_tables") is not None:
         pop = st.session_state["popolo_tables"]
         
@@ -509,21 +512,22 @@ elif view_selection == "🗂️ Popolo Standard Data":
                     label=f"📥 Download {key} CSV",
                     data=csv_bytes,
                     file_name=f"Master_{key}_Cleaned_Popolo.csv",
-                    mime="text/csv"
+                    mime="text/csv",
+                    key=f"dl_btn_{key}"
                 )
     else:
         st.info("💡 No active dataset found in memory. Please upload candidate PDFs in the **Data Ingestion & Parser** tab first.")
 
 # -----------------------------------------------------------------------------
-# TAB 3: PERPLEXITY SEARCH API
+# VIEW 3: PERPLEXITY SEARCH API
 # -----------------------------------------------------------------------------
-elif view_selection == "🌐 Perplexity Search API":
+elif view_key == "perplexity":
     st.write("### Perplexity Search Hub")
     st.info("Query real-time intelligence for South African political entities and PEPs.")
 
 # -----------------------------------------------------------------------------
-# TAB 4: GROQ AI SUMMARIZER
+# VIEW 4: GROQ AI SUMMARIZER
 # -----------------------------------------------------------------------------
-elif view_selection == "⚡ Groq AI Summarizer":
+elif view_key == "groq":
     st.write("### Groq High-Speed AI Analysis")
     st.info("Generate high-speed summaries and reports for candidates and political parties.")
