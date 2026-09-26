@@ -85,7 +85,7 @@ if "popolo_tables" not in st.session_state:
     st.session_state["popolo_tables"] = None
 
 # -----------------------------------------------------------------------------
-# 2. PARSER & ELECTION LOGIC HELPERS
+# 2. HELPER FUNCTIONS & POPOLO PIPELINE
 # -----------------------------------------------------------------------------
 MUNI_PREFIXES = [
     "BAARD", "KHOI", "HOOGLAND", "NKONYENI", "ALFRED NZO", "OR TAMBO",
@@ -93,6 +93,12 @@ MUNI_PREFIXES = [
 ]
 
 METRO_PREFIXES = ["BUF", "NMB", "CPT", "ETH", "EKU", "TSH", "JHB", "MAN", "City of", "eThekwini"]
+
+def slugify(text: str) -> str:
+    """Creates a clean, consistent ID slug from any text string."""
+    text = str(text).lower()
+    text = re.sub(r'[^a-z0-9]+', '_', text)
+    return text.strip('_')
 
 def build_master_party_map(party_df=None):
     master_party_map = {}
@@ -146,7 +152,7 @@ def clean_and_match_party(raw_party_str, master_party_map, sorted_master_keys, m
         if re.search(pattern, cleaned):
             return master_party_map[key]
 
-    return f"pty_{max_party_idx+1}", cleaned.title()
+    return f"pty_{max_party_idx+1:02d}", cleaned.title()
 
 def parse_name(full_name_str):
     parts = str(full_name_str).strip().split()
@@ -179,127 +185,148 @@ def split_muni_and_party(muni_and_party_str):
 
     return muni_and_party_str, muni_and_party_str
 
-def determine_popolo_office(muni_str, ward_order_str):
-    muni_str = str(muni_str).strip()
-    ward_order_str = str(ward_order_str).strip()
-    is_ward = ward_order_str.isdigit() and len(ward_order_str) < 5
-
-    is_metro = any(p in muni_str for p in METRO_PREFIXES)
-    is_district = muni_str.startswith("DC") or "DC" in muni_str
-
-    if is_metro:
-        return "Metro Council Ward Candidate" if is_ward else "Metro PR Candidate"
-    elif is_district:
-        return "District PR Candidate"
-    else:
-        return "Local Council Ward Candidate" if is_ward else "Local PR Candidate"
-
 def process_full_popolo_dataset(df_raw):
-    """Processes extracted nominations and returns all 6 Popolo standard tables."""
-    df_raw["clean_office"] = df_raw.apply(
-        lambda row: determine_popolo_office(row["municipality"], row["ward_pr_order"]),
-        axis=1
-    )
+    """
+    Processes extracted nominations into 6 fully linked Popolo standard tables.
+    """
+    # -------------------------------------------------------------------------
+    # 1. CHAMBERS TABLE (Code for Africa Standard Schema)
+    # -------------------------------------------------------------------------
+    df_chambers = pd.DataFrame([
+        {
+            "id": "sa_national_assembly",
+            "name": "National Assembly",
+            "area_id": "sa_country",
+            "office": "National Assembly"
+        },
+        {
+            "id": "sa_provincial_legislature",
+            "name": "Provincial Legislature",
+            "area_id": "sa_country",
+            "office": "Provincial Legislature"
+        },
+        {
+            "id": "sa_municipal_council",
+            "name": "Municipal Council",
+            "area_id": "sa_country",
+            "office": "Municipal Council"
+        }
+    ])
 
-    # 1. Persons Table
-    df_persons = df_raw[[
-        "full_name",
-        "party_id",
-        "party_name",
-        "clean_office",
-        "municipality",
-        "ward_pr_order"
-    ]].drop_duplicates(subset=["full_name"]).reset_index(drop=True)
-
-    df_persons["id"] = [f"pers_{i+1:05d}" for i in range(len(df_persons))]
+    # -------------------------------------------------------------------------
+    # 2. ROLES TABLE (CfA Schema Compliant: id, title, area_id, role, chamber_id)
+    # -------------------------------------------------------------------------
+    unique_munis = df_raw["municipality"].drop_duplicates().tolist()
     
-    name_parsed = df_persons["full_name"].apply(lambda x: pd.Series(parse_name(x)))
-    df_persons["first_name"] = name_parsed[0]
-    df_persons["middle_name"] = name_parsed[1]
-    df_persons["last_name"] = name_parsed[2]
-    df_persons["gender"] = None
+    roles_records = []
+    muni_to_role_id = {}
+    muni_to_area_id = {}
+    
+    for muni in unique_munis:
+        muni_slug = slugify(muni)
+        role_id = f"sa_cllr_{muni_slug}"
+        area_id = f"sa_ed_{muni_slug}"
+        
+        muni_to_role_id[muni] = role_id
+        muni_to_area_id[muni] = area_id
+        
+        roles_records.append({
+            "id": role_id,
+            "title": f"Councillor - {muni.title()}",
+            "area_id": area_id,
+            "role": "Municipal Councillor",
+            "chamber_id": "sa_municipal_council"
+        })
+        
+    df_roles = pd.DataFrame(roles_records)
 
-    df_persons_final = df_persons[[
-        "id",
-        "full_name",
-        "first_name",
-        "middle_name",
-        "last_name",
-        "gender",
-        "clean_office",
-        "party_id",
-        "party_name",
-        "municipality",
-        "ward_pr_order"
-    ]].rename(columns={"clean_office": "office"})
-
-    # 2. Memberships Table
-    df_memberships = df_raw.merge(
-        df_persons_final[["full_name", "id"]], on="full_name", how="left"
-    ).rename(columns={"id": "person_id"})
-
-    df_memberships["id"] = df_memberships["person_id"].apply(
-        lambda p_id: f"mshp_{p_id}_26"
+    # -------------------------------------------------------------------------
+    # 3. CONTESTS TABLE
+    # -------------------------------------------------------------------------
+    df_raw["contest_key"] = df_raw.apply(
+        lambda r: f"{slugify(r['municipality'])}_{slugify(r['ward_pr_order'])}", axis=1
     )
-    df_memberships["membership_type"] = "campaigning_politician"
-    df_memberships["list_category"] = df_memberships["ward_pr_order"].apply(
+    
+    contests_records = []
+    contest_key_to_id = {}
+    
+    for idx, row in df_raw[["municipality", "ward_pr_order", "contest_key"]].drop_duplicates().iterrows():
+        c_key = row["contest_key"]
+        muni = row["municipality"]
+        list_type = "WARD" if str(row["ward_pr_order"]).isdigit() and len(str(row["ward_pr_order"])) < 5 else "PR"
+        
+        contest_id = f"cntst_{c_key}"
+        contest_key_to_id[c_key] = contest_id
+        
+        contests_records.append({
+            "id": contest_id,
+            "name": f"{muni} - {list_type} Contest ({row['ward_pr_order']})",
+            "area_id": muni_to_area_id.get(muni, f"sa_ed_{slugify(muni)}"),
+            "election": "South Africa Local Government Elections 2026",
+            "type": list_type
+        })
+        
+    df_contests = pd.DataFrame(contests_records).drop_duplicates(subset=["id"])
+
+    # -------------------------------------------------------------------------
+    # 4. PARTIES TABLE
+    # -------------------------------------------------------------------------
+    df_parties = df_raw[["party_id", "party_name"]].drop_duplicates().reset_index(drop=True)
+    df_parties = df_parties.rename(columns={"party_id": "id", "party_name": "name"})
+    df_parties["country"] = "South Africa"
+
+    # -------------------------------------------------------------------------
+    # 5. PERSONS TABLE (Padded 2-digit ID format: pers_01, pers_02, ...)
+    # -------------------------------------------------------------------------
+    df_persons_unique = df_raw[["full_name"]].drop_duplicates().reset_index(drop=True)
+    
+    df_persons_unique["id"] = [f"pers_{i+1:02d}" for i in range(len(df_persons_unique))]
+    
+    parsed_names = df_persons_unique["full_name"].apply(parse_name)
+    df_persons_unique["first_name"] = [p[0] for p in parsed_names]
+    df_persons_unique["middle_name"] = [p[1] for p in parsed_names]
+    df_persons_unique["last_name"] = [p[2] for p in parsed_names]
+    df_persons_unique["gender"] = None
+    
+    df_persons = df_persons_unique[["id", "full_name", "first_name", "middle_name", "last_name", "gender"]]
+
+    # -------------------------------------------------------------------------
+    # 6. MEMBERSHIPS TABLE (Central Junction Linking Table)
+    # -------------------------------------------------------------------------
+    df_m = df_raw.merge(df_persons[["full_name", "id"]], on="full_name", how="left")
+    df_m = df_m.rename(columns={"id": "person_id"})
+
+    df_m["role_id"] = df_m["municipality"].map(muni_to_role_id)
+    df_m["contest_id"] = df_m["contest_key"].map(contest_key_to_id)
+    df_m["list_type"] = df_m["ward_pr_order"].apply(
         lambda x: "WARD" if str(x).isdigit() and len(str(x)) < 5 else "PR"
     )
-
-    df_memberships["detailed_office"] = (
-        df_memberships["municipality"]
-        + " ("
-        + df_memberships["list_category"]
-        + " Candidate)"
+    
+    df_m["id"] = df_m.apply(
+        lambda r: f"mshp_{r['person_id']}_{r['role_id']}_{slugify(r['ward_pr_order'])}", axis=1
     )
-
-    df_memberships_final = df_memberships[[
+    
+    df_memberships = df_m[[
         "id",
-        "person_id",
-        "party_id",
-        "party_name",
+        "person_id",    # FK -> Persons.id
+        "party_id",     # FK -> Parties.id
+        "role_id",      # FK -> Roles.id
+        "contest_id",   # FK -> Contests.id
         "municipality",
-        "list_category",
-        "ward_pr_order",
-        "detailed_office",
-        "membership_type"
-    ]].rename(
-        columns={
-            "municipality": "Municipality",
-            "list_category": "list_type",
-            "ward_pr_order": "Ward_PR_Order",
-            "detailed_office": "office"
-        }
-    )
-
-    # 3. Parties Table
-    df_parties_final = df_raw[["party_id", "party_name"]].drop_duplicates().reset_index(drop=True)
-    df_parties_final["country"] = "South Africa"
-
-    # 4. Roles Table
-    df_roles_final = pd.DataFrame([
-        {"id": "role_ward", "role_title": "Ward Councillor Candidate", "jurisdiction": "South Africa"},
-        {"id": "role_pr", "role_title": "Proportional Representation Candidate", "jurisdiction": "South Africa"}
-    ])
-
-    # 5. Chambers Table
-    df_chambers_final = pd.DataFrame([
-        {"id": "ch_metro", "chamber_name": "Metropolitan Municipal Council", "country": "South Africa"},
-        {"id": "ch_local", "chamber_name": "Local Municipal Council", "country": "South Africa"},
-        {"id": "ch_district", "chamber_name": "District Municipal Council", "country": "South Africa"}
-    ])
-
-    # 6. Contests Table
-    df_contests_final = df_raw[["municipality", "ward_pr_order", "clean_office"]].drop_duplicates().reset_index(drop=True)
-    df_contests_final["id"] = [f"cntst_{i+1:05d}" for i in range(len(df_contests_final))]
+        "list_type",
+        "ward_pr_order"
+    ]].rename(columns={
+        "municipality": "Municipality",
+        "ward_pr_order": "Ward_PR_Order"
+    })
 
     return {
-        "Persons": df_persons_final,
-        "Parties": df_parties_final,
-        "Memberships": df_memberships_final,
-        "Roles": df_roles_final,
-        "Chambers": df_chambers_final,
-        "Contests": df_contests_final,
+        "Persons": df_persons,
+        "Parties": df_parties,
+        "Memberships": df_memberships,
+        "Roles": df_roles,
+        "Chambers": df_chambers,
+        "Contests": df_contests,
         "Raw_Noms": df_raw
     }
 
@@ -325,7 +352,7 @@ def get_groq_client():
         return None
 
 # -----------------------------------------------------------------------------
-# 4. SIDEBAR & NAVIGATION (Robust Enum Mapping)
+# 4. SIDEBAR & NAVIGATION
 # -----------------------------------------------------------------------------
 st.sidebar.markdown("## 🌍 PEP Intelligence")
 st.sidebar.caption("South Africa LGE Candidate Engine")
@@ -343,7 +370,6 @@ selected_label = st.sidebar.radio(
     options=list(nav_options.values())
 )
 
-# Extract internal key safely
 view_key = [k for k, v in nav_options.items() if v == selected_label][0]
 
 st.sidebar.markdown("---")
