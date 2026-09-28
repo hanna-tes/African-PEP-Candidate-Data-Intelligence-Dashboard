@@ -189,7 +189,9 @@ def split_muni_and_party(muni_and_party_str):
 def process_full_popolo_dataset(df_raw):
     """Processes extracted nominations into 6 fully linked Popolo standard tables."""
     
+    # -------------------------------------------------------------------------
     # 1. CHAMBERS TABLE
+    # -------------------------------------------------------------------------
     df_chambers = pd.DataFrame([
         {
             "id": "sa_national_assembly",
@@ -211,31 +213,9 @@ def process_full_popolo_dataset(df_raw):
         }
     ])
 
-    # 2. ROLES TABLE
-    unique_munis = df_raw["municipality"].drop_duplicates().tolist()
-    roles_records = []
-    muni_to_role_id = {}
-    muni_to_area_id = {}
-    
-    for muni in unique_munis:
-        muni_slug = slugify(muni)
-        role_id = f"sa_cllr_{muni_slug}"
-        area_id = f"sa_ed_{muni_slug}"
-        
-        muni_to_role_id[muni] = role_id
-        muni_to_area_id[muni] = area_id
-        
-        roles_records.append({
-            "id": role_id,
-            "title": f"Councillor - {muni.title()}",
-            "area_id": area_id,
-            "role": "Municipal Councillor",
-            "chamber_id": "sa_municipal_council"
-        })
-        
-    df_roles = pd.DataFrame(roles_records)
-
-    # 3. CONTESTS TABLE
+    # -------------------------------------------------------------------------
+    # 2. CONTESTS TABLE
+    # -------------------------------------------------------------------------
     contests_records = []
     contest_key_to_id = {}
     
@@ -258,19 +238,61 @@ def process_full_popolo_dataset(df_raw):
         contests_records.append({
             "id": contest_id,
             "name": contest_name,
-            "area_id": muni_to_area_id.get(muni, f"sa_ed_{muni_slug}"),
+            "area_id": f"sa_ed_{muni_slug}",
             "election_id": "sa_lge_2026",
-            "type": contest_type
+            "type": contest_type,
+            "muni_slug": muni_slug,
+            "muni_raw": muni
         })
         
     df_contests = pd.DataFrame(contests_records).drop_duplicates(subset=["id"])
 
+    # -------------------------------------------------------------------------
+    # 3. ROLES TABLE
+    # -------------------------------------------------------------------------
+    roles_records = []
+    for _, c_row in df_contests.iterrows():
+        cid = c_row["id"]
+        muni_raw = c_row["muni_raw"]
+        
+        if "sa_ward_" in cid:
+            muni_slug = cid.replace("sa_ward_", "").split("_w")[0]
+        elif "sa_pr_" in cid:
+            muni_slug = cid.replace("sa_pr_", "").replace("_2026", "")
+        else:
+            muni_slug = c_row["muni_slug"]
+
+        role_id = f"sa_cllr_{muni_slug}"
+        area_id = f"sa_ed_{muni_slug}"
+        
+        roles_records.append({
+            "id": role_id,
+            "title": f"Councillor - {muni_slug.replace('_', ' ').title()}",
+            "area_id": area_id,
+            "role": "Municipal Councillor",
+            "chamber_id": "sa_municipal_council"
+        })
+        
+    df_roles = pd.DataFrame(roles_records).drop_duplicates(subset=["id"])
+
+    # -------------------------------------------------------------------------
     # 4. PARTIES TABLE
+    # -------------------------------------------------------------------------
     df_parties = df_raw[["party_id", "party_name"]].drop_duplicates().reset_index(drop=True)
     df_parties = df_parties.rename(columns={"party_id": "id", "party_name": "name"})
     df_parties["country"] = "South Africa"
+    df_parties["fb_urls"] = "N/A"
+    df_parties["x_urls"] = "N/A"
+    df_parties["ig_urls"] = "N/A"
+    df_parties["tiktok_urls"] = "N/A"
+    df_parties["yt_urls"] = "N/A"
+    df_parties["linkedin_urls"] = "N/A"
+    df_parties["wa_numbers"] = "N/A"
+    df_parties["websites"] = "N/A"
 
+    # -------------------------------------------------------------------------
     # 5. PERSONS TABLE
+    # -------------------------------------------------------------------------
     df_persons_unique = df_raw[["full_name"]].drop_duplicates().reset_index(drop=True)
     df_persons_unique["id"] = [f"pers_{i+1:02d}" for i in range(len(df_persons_unique))]
     
@@ -279,16 +301,41 @@ def process_full_popolo_dataset(df_raw):
     df_persons_unique["middle_name"] = [p[1] for p in parsed_names]
     df_persons_unique["last_name"] = [p[2] for p in parsed_names]
     df_persons_unique["gender"] = None
+    df_persons_unique["fb_urls"] = "N/A"
+    df_persons_unique["x_urls"] = "N/A"
+    df_persons_unique["ig_urls"] = "N/A"
+    df_persons_unique["tiktok_urls"] = "N/A"
+    df_persons_unique["yt_urls"] = "N/A"
+    df_persons_unique["linkedin_urls"] = "N/A"
+    df_persons_unique["wa_numbers"] = "N/A"
+    df_persons_unique["websites"] = "N/A"
     
-    df_persons = df_persons_unique[["id", "full_name", "first_name", "middle_name", "last_name", "gender"]]
+    df_persons = df_persons_unique[[
+        "id", "full_name", "first_name", "middle_name", "last_name", "gender",
+        "fb_urls", "x_urls", "ig_urls", "tiktok_urls", "yt_urls", "linkedin_urls", "wa_numbers", "websites"
+    ]]
 
+    # -------------------------------------------------------------------------
     # 6. MEMBERSHIPS TABLE
+    # -------------------------------------------------------------------------
     df_m = df_raw.merge(df_persons[["full_name", "id"]], on="full_name", how="left")
     df_m = df_m.rename(columns={"id": "person_id"})
 
-    df_m["role_id"] = df_m["municipality"].map(muni_to_role_id)
-    df_m["contest_id"] = df_m.apply(lambda r: contest_key_to_id.get((r["municipality"], str(r["ward_pr_order"]).strip())), axis=1)
+    df_m["contest_id"] = df_m.apply(
+        lambda r: contest_key_to_id.get((r["municipality"], str(r["ward_pr_order"]).strip())), axis=1
+    )
     
+    def resolve_role_id(contest_id, raw_muni):
+        if pd.notna(contest_id):
+            if "sa_ward_" in str(contest_id):
+                muni_slug = str(contest_id).replace("sa_ward_", "").split("_w")[0]
+                return f"sa_cllr_{muni_slug}"
+            elif "sa_pr_" in str(contest_id):
+                muni_slug = str(contest_id).replace("sa_pr_", "").replace("_2026", "")
+                return f"sa_cllr_{muni_slug}"
+        return f"sa_cllr_{slugify(raw_muni)}"
+
+    df_m["role_id"] = df_m.apply(lambda r: resolve_role_id(r["contest_id"], r["municipality"]), axis=1)
     df_m["id"] = df_m["person_id"].apply(lambda pid: f"mshp_{pid}_26")
     df_m["membership_type"] = "Municipal Councillor"
     df_m["start_date"] = "2026-09-04"
@@ -297,17 +344,11 @@ def process_full_popolo_dataset(df_raw):
     df_m["has_end_date"] = True
 
     df_memberships = df_m[[
-        "id",
-        "role_id",
-        "person_id",
-        "party_id",
-        "membership_type",
-        "start_date",
-        "end_date",
-        "is_partisan",
-        "has_end_date",
-        "contest_id"
+        "id", "role_id", "person_id", "party_id", "membership_type",
+        "start_date", "end_date", "is_partisan", "has_end_date", "contest_id"
     ]]
+
+    df_contests_clean = df_contests.drop(columns=["muni_slug", "muni_raw"])
 
     return {
         "Persons": df_persons,
@@ -315,12 +356,12 @@ def process_full_popolo_dataset(df_raw):
         "Memberships": df_memberships,
         "Roles": df_roles,
         "Chambers": df_chambers,
-        "Contests": df_contests,
+        "Contests": df_contests_clean,
         "Raw_Noms": df_raw
     }
 
 def export_popolo_json(popolo_dict) -> str:
-    """Exports the in-memory Popolo DataFrames into standard structured Popolo JSON."""
+    """Exports the in-memory Popolo DataFrames into standard structured Popolo JSON without social_network_accounts."""
     df_persons = popolo_dict["Persons"]
     df_parties = popolo_dict["Parties"]
     df_memberships = popolo_dict["Memberships"]
@@ -339,28 +380,25 @@ def export_popolo_json(popolo_dict) -> str:
         "city": ""
     }]
 
-    chambers = []
-    for _, r in df_chambers.iterrows():
-        chambers.append({
-            "id": str(r["id"]),
-            "name": {"en_US": str(r["name"])},
-            "area_id": str(r["area_id"])
-        })
+    chambers = [
+        {"id": str(r["id"]), "name": {"en_US": str(r["name"])}, "area_id": str(r["area_id"])}
+        for _, r in df_chambers.iterrows()
+    ]
 
-    roles = []
-    for _, r in df_roles.iterrows():
-        roles.append({
+    roles = [
+        {
             "id": str(r["id"]),
             "title": {"en_US": str(r["title"])},
             "area_id": str(r["area_id"]),
             "role": str(r["role"]),
             "chamber_id": str(r["chamber_id"]),
             "description": {}
-        })
+        }
+        for _, r in df_roles.iterrows()
+    ]
 
-    contests = []
-    for _, r in df_contests.iterrows():
-        contests.append({
+    contests = [
+        {
             "id": str(r["id"]),
             "title": {"en_US": str(r["name"])},
             "start_date": "2026-09-04",
@@ -368,7 +406,9 @@ def export_popolo_json(popolo_dict) -> str:
             "is_partisan": True,
             "role_ids": [],
             "election_identifier": str(r["election_id"])
-        })
+        }
+        for _, r in df_contests.iterrows()
+    ]
 
     parties = []
     for _, r in df_parties.iterrows():
@@ -376,12 +416,16 @@ def export_popolo_json(popolo_dict) -> str:
             "id": str(r["id"]),
             "name": {"en_US": str(r["name"])},
             "abbreviation": [{"en_US": {"en_US": str(r["name"])}}],
-            "fb_urls": [],
-            "ig_urls": [],
-            "websites": [],
+            "fb_urls": r.get("fb_urls", "N/A"),
+            "x_urls": r.get("x_urls", "N/A"),
+            "ig_urls": r.get("ig_urls", "N/A"),
+            "tiktok_urls": r.get("tiktok_urls", "N/A"),
+            "yt_urls": r.get("yt_urls", "N/A"),
+            "linkedin_urls": r.get("linkedin_urls", "N/A"),
+            "wa_numbers": r.get("wa_numbers", "N/A"),
+            "websites": r.get("websites", "N/A"),
             "colors": [],
-            "logo_urls": [],
-            "wa_number": ""
+            "logo_urls": []
         })
 
     persons = []
@@ -390,24 +434,26 @@ def export_popolo_json(popolo_dict) -> str:
             "id": str(r["id"]),
             "full_name": {"en_US": str(r["full_name"])},
             "gender": str(r["gender"]) if pd.notna(r["gender"]) else "",
-            "fb_urls": [],
-            "ig_urls": [],
-            "websites": [],
+            "fb_urls": r.get("fb_urls", "N/A"),
+            "x_urls": r.get("x_urls", "N/A"),
+            "ig_urls": r.get("ig_urls", "N/A"),
+            "tiktok_urls": r.get("tiktok_urls", "N/A"),
+            "yt_urls": r.get("yt_urls", "N/A"),
+            "linkedin_urls": r.get("linkedin_urls", "N/A"),
+            "wa_numbers": r.get("wa_numbers", "N/A"),
+            "websites": r.get("websites", "N/A"),
             "identifiers": [],
             "first_name": {"en_US": str(r["first_name"])},
             "middle_name": {"en_US": str(r["middle_name"])},
             "last_name": {"en_US": str(r["last_name"])},
             "other_names": [],
             "date_of_birth": "",
-            "wa_numbers": [],
-            "social_network_accounts": [],
             "emails": [],
             "photo_urls": []
         })
 
-    memberships = []
-    for _, r in df_memberships.iterrows():
-        memberships.append({
+    memberships = [
+        {
             "id": str(r["id"]),
             "role_id": str(r["role_id"]),
             "person_id": str(r["person_id"]),
@@ -419,7 +465,9 @@ def export_popolo_json(popolo_dict) -> str:
             "contest_id": str(r["contest_id"]),
             "party_ids": [str(r["party_id"])],
             "source_urls": []
-        })
+        }
+        for _, r in df_memberships.iterrows()
+    ]
 
     popolo_json_structure = {
         "areas": areas,
@@ -434,7 +482,7 @@ def export_popolo_json(popolo_dict) -> str:
     return json.dumps(popolo_json_structure, indent=4, ensure_ascii=False)
 
 # -----------------------------------------------------------------------------
-# 3. API CLIENT RESOLUTION
+# 3. API CLIENT RESOLUTION & SOCIAL SEARCH ENGINE
 # -----------------------------------------------------------------------------
 def get_perplexity_client():
     api_key = st.secrets.get("PERPLEXITY_API_KEY", os.environ.get("PERPLEXITY_API_KEY", ""))
@@ -454,6 +502,86 @@ def get_groq_client():
     except Exception:
         return None
 
+def clean_social_value(val):
+    """Ensures missing, empty, or None values default strictly to N/A."""
+    if not val or str(val).strip() in ["", "none", "null", "None", "Null"]:
+        return "N/A"
+    return str(val).strip()
+
+def search_person_socials(p_client, person_name, party_name=""):
+    """Uses Perplexity to discover official social profiles for candidate persons."""
+    prompt = f"""
+    Find official public social media URLs, WhatsApp contact, and website for South African candidate '{person_name}' (Party: {party_name}).
+    Respond ONLY with a raw valid JSON object with no markdown codeblocks:
+    {{
+      "fb_urls": "Facebook URL or N/A",
+      "x_urls": "X/Twitter URL or N/A",
+      "ig_urls": "Instagram URL or N/A",
+      "tiktok_urls": "TikTok URL or N/A",
+      "yt_urls": "YouTube URL or N/A",
+      "linkedin_urls": "LinkedIn URL or N/A",
+      "wa_numbers": "WhatsApp Number or N/A",
+      "websites": "Website URL or N/A"
+    }}
+    If any link or number is not found, use "N/A".
+    """
+    default_na = {
+        "fb_urls": "N/A", "x_urls": "N/A", "ig_urls": "N/A",
+        "tiktok_urls": "N/A", "yt_urls": "N/A", "linkedin_urls": "N/A",
+        "wa_numbers": "N/A", "websites": "N/A"
+    }
+    try:
+        res = p_client.chat.completions.create(
+            model="sonar",
+            messages=[
+                {"role": "system", "content": "You are a precise political OSINT researcher. Output valid JSON only with 'N/A' for missing fields."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        content = res.choices[0].message.content.strip()
+        content = re.sub(r"^```json|```$", "", content).strip()
+        parsed = json.loads(content)
+        return {k: clean_social_value(parsed.get(k)) for k in default_na.keys()}
+    except Exception:
+        return default_na
+
+def search_party_socials(p_client, party_name):
+    """Uses Perplexity to discover official social media profiles and websites for political parties."""
+    prompt = f"""
+    Find official social media URLs, WhatsApp contact, and website for South African political party '{party_name}'.
+    Respond ONLY with a raw valid JSON object with no markdown codeblocks:
+    {{
+      "fb_urls": "Facebook URL or N/A",
+      "x_urls": "X/Twitter URL or N/A",
+      "ig_urls": "Instagram URL or N/A",
+      "tiktok_urls": "TikTok URL or N/A",
+      "yt_urls": "YouTube URL or N/A",
+      "linkedin_urls": "LinkedIn URL or N/A",
+      "wa_numbers": "WhatsApp Number or N/A",
+      "websites": "Website URL or N/A"
+    }}
+    If any link or number is not found, use "N/A".
+    """
+    default_na = {
+        "fb_urls": "N/A", "x_urls": "N/A", "ig_urls": "N/A",
+        "tiktok_urls": "N/A", "yt_urls": "N/A", "linkedin_urls": "N/A",
+        "wa_numbers": "N/A", "websites": "N/A"
+    }
+    try:
+        res = p_client.chat.completions.create(
+            model="sonar",
+            messages=[
+                {"role": "system", "content": "You are a precise political OSINT researcher. Output valid JSON only with 'N/A' for missing fields."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        content = res.choices[0].message.content.strip()
+        content = re.sub(r"^```json|```$", "", content).strip()
+        parsed = json.loads(content)
+        return {k: clean_social_value(parsed.get(k)) for k in default_na.keys()}
+    except Exception:
+        return default_na
+
 # -----------------------------------------------------------------------------
 # 4. SIDEBAR & NAVIGATION
 # -----------------------------------------------------------------------------
@@ -464,15 +592,11 @@ st.sidebar.markdown("---")
 nav_options = {
     "ingest": "📥 Data Ingestion & Parser",
     "popolo": "🗂️ Popolo Standard Data ",
-    "perplexity": "🌐 Perplexity Search API",
+    "perplexity": "🌐 Social Media & PEP Search (Perplexity)",
     "groq": "⚡ Groq AI Summarizer"
 }
 
-selected_label = st.sidebar.radio(
-    "Go to",
-    options=list(nav_options.values())
-)
-
+selected_label = st.sidebar.radio("Go to", options=list(nav_options.values()))
 view_key = [k for k, v in nav_options.items() if v == selected_label][0]
 
 st.sidebar.markdown("---")
@@ -491,7 +615,6 @@ if g_client:
 else:
     st.sidebar.warning("🔑 Groq Key Missing")
 
-# Header Rendering
 st.markdown(f"""
     <div class="header-card">
         <div>
@@ -564,59 +687,11 @@ if view_key == "ingest":
         pop = st.session_state["popolo_tables"]
         df_persons = pop["Persons"]
         df_memberships = pop["Memberships"]
-        df_raw = pop["Raw_Noms"]
 
-        total_candidacy_records = len(df_memberships)
-        total_unique_candidates = len(df_persons)
-
-        df_raw["list_type"] = df_raw["ward_pr_order"].apply(
-            lambda x: "WARD" if str(x).isdigit() and len(str(x)) < 5 else "PR"
-        )
-        candidate_lists = df_raw.groupby("full_name")["list_type"].unique()
-        dual_candidates = sum(candidate_lists.apply(lambda x: "WARD" in x and "PR" in x))
-        ward_only_candidates = sum(candidate_lists.apply(lambda x: "WARD" in x and "PR" not in x))
-        pr_only_candidates = sum(candidate_lists.apply(lambda x: "WARD" not in x and "PR" in x))
-
-        total_ward_nominations = sum(df_raw["list_type"] == "WARD")
-        total_pr_nominations = sum(df_raw["list_type"] == "PR")
-
-        unique_munis = df_raw["municipality"].unique()
-        metro_munis = [m for m in unique_munis if any(p in m for p in METRO_PREFIXES)]
-        local_district_munis = [m for m in unique_munis if m not in metro_munis]
-
-        st.markdown("""
-            <div class="info-box">
-                <b>📌 Types of Elections & Ballot System Breakdown (By Municipality Type):</b><br/>
-                • <b>Metropolitan Municipalities – 2 Ballots per Ward:</b><br/>
-                &nbsp;&nbsp;&nbsp;&nbsp;1. Metropolitan Council Ward Ballot<br/>
-                &nbsp;&nbsp;&nbsp;&nbsp;2. Metropolitan Proportional Representation (PR) Ballot<br/>
-                • <b>All Other Municipalities – 3 Ballots per Ward:</b><br/>
-                &nbsp;&nbsp;&nbsp;&nbsp;1. Local Council Ward Ballot<br/>
-                &nbsp;&nbsp;&nbsp;&nbsp;2. Local Council Proportional Representation (PR) Ballot<br/>
-                &nbsp;&nbsp;&nbsp;&nbsp;3. District Council Proportional Representation (PR) Ballot<br/>
-                <br/>
-                <i>Note: Candidates frequently stand for election in both a Ward contest and on a party's PR list, leading to multiple candidacy records for a single unique individual.</i>
-            </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("### 📊 Dataset & Candidacy Metrics")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total Candidacy Records", f"{total_candidacy_records:,}")
-        m2.metric("Unique Individual Candidates", f"{total_unique_candidates:,}")
-        m3.metric("Ward Nominations Count", f"{total_ward_nominations:,}")
-        m4.metric("PR Nominations Count", f"{total_pr_nominations:,}")
-
-        st.markdown("##### Candidate Dual-Standing & Municipal Distribution")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Dual Candidates (Ward + PR)", f"{dual_candidates:,}")
-        c2.metric("Ward-Only Candidates", f"{ward_only_candidates:,}")
-        c3.metric("PR-Only Candidates", f"{pr_only_candidates:,}")
-        c4.metric("Total Unique Municipalities", f"{len(unique_munis):,}")
-
-        st.markdown("##### Municipality Classification")
-        m_col1, m_col2 = st.columns(2)
-        m_col1.metric("Metropolitan Municipalities (2 Ballots)", f"{len(metro_munis):,}")
-        m_col2.metric("Local & District Municipalities (3 Ballots)", f"{len(local_district_munis):,}")
+        st.markdown("### 📊 Dataset Overview")
+        m1, m2 = st.columns(2)
+        m1.metric("Total Candidacy Records", f"{len(df_memberships):,}")
+        m2.metric("Unique Individual Candidates", f"{len(df_persons):,}")
 
         st.markdown("---")
         st.markdown("### 🧹 Persons Table Preview")
@@ -632,8 +707,6 @@ if view_key == "ingest":
 elif view_key == "popolo":
     if st.session_state.get("popolo_tables") is not None:
         pop = st.session_state["popolo_tables"]
-        
-        # Export full dataset as single Popolo JSON
         popolo_json_data = export_popolo_json(pop)
         
         st.markdown("### 📦 Master Export Options")
@@ -669,43 +742,77 @@ elif view_key == "popolo":
         st.info("💡 No active dataset found in memory. Please upload candidate PDFs in the **Data Ingestion & Parser** tab first.")
 
 # -----------------------------------------------------------------------------
-# VIEW 3: PERPLEXITY SEARCH API
+# VIEW 3: PERPLEXITY SEARCH & SOCIAL ENRICHMENT API
 # -----------------------------------------------------------------------------
 elif view_key == "perplexity":
-    st.markdown("### 🌐 Real-Time Political & PEP Search (Perplexity)")
-    st.write("Perform live web searches for politician profiles, electoral histories, and news background.")
+    st.markdown("### 🌐 Real-Time Political & Social Media Search")
+    st.write("Search for social media channels (`fb_urls`, `x_urls`, `ig_urls`, `tiktok_urls`, `yt_urls`, `linkedin_urls`, `wa_numbers`, `websites`). Missing values automatically default to `N/A`.")
 
     if not p_client:
         st.error("⚠️ Perplexity API Key is not configured in `st.secrets` or environment variables.")
     else:
-        query = st.text_input("Enter Search Query / Candidate Name:", placeholder="e.g. Cyril Ramaphosa background and party affiliations")
-        model_choice = st.selectbox("Select Model:", ["sonar", "sonar-pro"])
-        
-        if st.button("🔍 Search Perplexity"):
-            if query.strip():
-                with st.spinner("Searching live web data..."):
-                    try:
-                        response = p_client.chat.completions.create(
-                            model=model_choice,
-                            messages=[
-                                {"role": "system", "content": "You are a specialized political research analyst focused on South African electoral and PEP data."},
-                                {"role": "user", "content": query}
-                            ]
-                        )
-                        result_text = response.choices[0].message.content
-                        st.markdown("#### 📄 Search Results")
-                        st.markdown(result_text)
-                    except Exception as e:
-                        st.error(f"Execution Error: {e}")
+        st.markdown("---")
+        st.markdown("#### 🔗 Automated Social Media Link Finder")
+
+        if st.session_state.get("popolo_tables") is not None:
+            pop = st.session_state["popolo_tables"]
+            enrich_type = st.radio("Select Table to Enrich Social Links:", ["Persons (Candidates)", "Parties (Political Parties)"], horizontal=True)
+
+            if enrich_type == "Persons (Candidates)":
+                df_pers = pop["Persons"]
+                max_cand = st.slider("Select Max Candidates to Search:", 1, len(df_pers), min(10, len(df_pers)))
+
+                if st.button("🔍 Search & Enrich Candidates Social Links"):
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+
+                    for idx in range(max_cand):
+                        person_name = df_pers.at[idx, "full_name"]
+                        status_text.text(f"Searching social profiles for: {person_name} ({idx+1}/{max_cand})")
+
+                        socials = search_person_socials(p_client, person_name)
+
+                        for col_key in ["fb_urls", "x_urls", "ig_urls", "tiktok_urls", "yt_urls", "linkedin_urls", "wa_numbers", "websites"]:
+                            df_pers.at[idx, col_key] = socials.get(col_key, "N/A")
+
+                        progress_bar.progress((idx + 1) / max_cand)
+
+                    st.session_state["popolo_tables"]["Persons"] = df_pers
+                    st.success("✅ Persons table updated with discovered social media links!")
+                    st.dataframe(df_pers.head(max_cand), use_container_width=True)
+
             else:
-                st.warning("Please enter a query.")
+                df_part = pop["Parties"]
+                max_party = st.slider("Select Max Parties to Search:", 1, len(df_part), min(10, len(df_part)))
+
+                if st.button("🔍 Search & Enrich Parties Social Links"):
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+
+                    for idx in range(max_party):
+                        party_name = df_part.at[idx, "name"]
+                        status_text.text(f"Searching social profiles for party: {party_name} ({idx+1}/{max_party})")
+
+                        socials = search_party_socials(p_client, party_name)
+
+                        for col_key in ["fb_urls", "x_urls", "ig_urls", "tiktok_urls", "yt_urls", "linkedin_urls", "wa_numbers", "websites"]:
+                            df_part.at[idx, col_key] = socials.get(col_key, "N/A")
+
+                        progress_bar.progress((idx + 1) / max_party)
+
+                    st.session_state["popolo_tables"]["Parties"] = df_part
+                    st.success("✅ Parties table updated with discovered social media links!")
+                    st.dataframe(df_part.head(max_party), use_container_width=True)
+
+        else:
+            st.info("💡 Upload PDF data first in the Data Ingestion tab to run social media enrichment.")
 
 # -----------------------------------------------------------------------------
-# VIEW 4: GROQ AI SUMMARIZER (Using qwen/qwen3.6-27b)
+# VIEW 4: GROQ AI SUMMARIZER
 # -----------------------------------------------------------------------------
 elif view_key == "groq":
     st.markdown("### ⚡ High-Speed AI Dataset Summarizer (Groq)")
-    st.write("Generate automated summaries, candidate insights, and analytical reports using Qwen models on Groq.")
+    st.write("Generate automated summaries and analytical reports using Qwen models on Groq.")
 
     if not g_client:
         st.error("⚠️ Groq API Key is not configured in `st.secrets` or environment variables.")
@@ -716,45 +823,32 @@ elif view_key == "groq":
         )
         
         has_data = st.session_state.get("popolo_tables") is not None
-        
         prompt_option = st.selectbox("Analysis Goal:", [
             "Summarize Dataset Candidate & Party Distribution",
             "Identify Potential High-Risk PEPs or Key Parties",
             "Custom Query"
         ])
 
-        custom_prompt = ""
-        if prompt_option == "Custom Query":
-            custom_prompt = st.text_area("Enter Custom Prompt:")
+        custom_prompt = st.text_area("Enter Custom Prompt:") if prompt_option == "Custom Query" else ""
 
         if st.button("⚡ Generate AI Summary"):
             with st.spinner(f"Analyzing dataset with {model_choice}..."):
                 try:
                     if has_data:
                         pop = st.session_state["popolo_tables"]
-                        parties_summary = pop["Parties"].head(10).to_string()
-                        persons_summary = pop["Persons"].head(10).to_string()
-                        memberships_summary = pop["Memberships"].head(10).to_string()
-                        contests_summary = pop["Contests"].head(10).to_string()
-                        
-                        context = f"Parties Sample:\n{parties_summary}\n\nPersons Sample:\n{persons_summary}\n\nMemberships Sample:\n{memberships_summary}\n\nContests Sample:\n{contests_summary}"
+                        context = f"Parties Sample:\n{pop['Parties'].head(10).to_string()}\n\nPersons Sample:\n{pop['Persons'].head(10).to_string()}"
                     else:
-                        context = "No specific dataset is uploaded in memory. Provide general analysis of South African Municipal Elections."
+                        context = "No specific dataset uploaded in memory."
 
-                    if prompt_option == "Custom Query":
-                        full_user_prompt = f"{custom_prompt}\n\nData Context:\n{context}"
-                    else:
-                        full_user_prompt = f"Goal: {prompt_option}\n\nData Context:\n{context}"
+                    full_user_prompt = f"{custom_prompt if prompt_option == 'Custom Query' else prompt_option}\n\nData Context:\n{context}"
 
                     chat_completion = g_client.chat.completions.create(
                         messages=[
-                            {"role": "system", "content": "You are an executive political analyst expert in South African local government candidate data."},
+                            {"role": "system", "content": "You are an executive political analyst expert in South African candidate data."},
                             {"role": "user", "content": full_user_prompt}
                         ],
                         model=model_choice,
                     )
-                    
-                    st.markdown("#### 🤖 Qwen AI Analysis Report")
                     st.markdown(chat_completion.choices[0].message.content)
                 except Exception as e:
                     st.error(f"Execution Error: {e}")
